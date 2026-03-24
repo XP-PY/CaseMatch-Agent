@@ -1,0 +1,19 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Local outputs
+output/*
+!output/.gitkeep
+
+# Large local data and generated indices
+data/*
+!data/.gitkeep
+
+# OS / editor
+.DS_Store
+.vscode/
