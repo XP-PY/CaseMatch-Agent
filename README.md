@@ -116,7 +116,7 @@ PYTHONPATH=src python -m casematch_agent.gradio_app --host 127.0.0.1 --port 7860
 #### Interface Preview
 
 <p align="center">
-  <img src="assert/demo_gradio.png" alt="CaseMatch Agent Gradio UI" width="100%" />
+  <img src="assets/demo_gradio.png" alt="CaseMatch Agent Gradio UI" width="100%" />
 </p>
 
 The Gradio UI supports:
@@ -243,6 +243,43 @@ python scripts/hybrid_experiment.py \
   --methods bm25 \
   --max-queries 5
 ```
+
+## Experimental Results on LeCaRD
+
+The following results were obtained on the processed `LeCaRD` benchmark used in this repository.
+
+Notes:
+
+- All metrics are reported as percentages. Higher is better.
+- `*-baseline` means the retriever uses the full judgment text as input.
+- Other variants indicate which structured field or field combination is used.
+- `bge_m3-fused-bm25` is the current hybrid retrieval strategy used in this project:
+  `BGE-M3(case_summary + dispute_focus + court_reasoning) + BM25 bonus(four_elements, laws_and_charges)`.
+- `bge_m3-fused_all-bm25` is the full-structure hybrid variant:
+  `BGE-M3(case_summary + dispute_focus + court_reasoning + four_elements + laws_and_charges) + BM25 bonus`.
+
+### BM25 and BGE-M3 Variants
+
+| Method | P@1 | P@3 | P@5 | P@10 | NDCG@5 | NDCG@10 | NDCG@15 | NDCG@20 | NDCG@30 | MAP | MRR |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `bm25-baseline` | 52.34 | 41.74 | 40.75 | 37.20 | 61.24 | 64.11 | 68.14 | 71.86 | 79.71 | 47.71 | 63.54 |
+| `bm25-case_summary` | 16.85 | 20.97 | 20.45 | 20.11 | 43.56 | 49.33 | 53.61 | 58.63 | 66.32 | 26.71 | 34.39 |
+| `bm25-dispute_focus` | 17.95 | 18.80 | 17.44 | 14.62 | 34.82 | 35.89 | 36.55 | 37.51 | 41.70 | 19.74 | 32.46 |
+| `bm25-four_elements` | 8.99 | 12.36 | 13.03 | 12.81 | 35.41 | 39.85 | 44.43 | 47.83 | 55.94 | 18.41 | 23.41 |
+| `bm25-court_reasoning` | 10.11 | 12.73 | 13.03 | 14.83 | 33.21 | 37.21 | 39.61 | 41.39 | 45.34 | 17.94 | 25.19 |
+| `bm25-laws_and_charges` | 7.87 | 7.87 | 7.64 | 7.19 | 32.60 | 36.02 | 39.97 | 42.91 | 47.92 | 14.29 | 17.46 |
+| `bge_m3-baseline` | 38.32 | 40.19 | 40.00 | 38.79 | 59.43 | 63.17 | 65.85 | 68.74 | 75.61 | 44.24 | 54.25 |
+| `bge_m3-case_summary` | 55.14 | 48.29 | 45.05 | 41.59 | 65.60 | 67.84 | 70.07 | 72.74 | 78.10 | 52.25 | 66.07 |
+| `bge_m3-dispute_focus` | 24.30 | 20.87 | 18.88 | 16.26 | 30.80 | 31.19 | 31.71 | 32.08 | 35.10 | 23.37 | 35.92 |
+| `bge_m3-four_elements` | 53.27 | 51.09 | 48.22 | 40.75 | 64.56 | 65.33 | 67.50 | 69.84 | 75.25 | 50.39 | 66.07 |
+| `bge_m3-court_reasoning` | 41.12 | 41.43 | 40.00 | 36.82 | 59.51 | 61.98 | 63.90 | 66.03 | 70.58 | 46.20 | 58.01 |
+| `bge_m3-laws_and_charges` | 40.19 | 42.37 | 42.24 | 39.53 | 59.65 | 61.92 | 63.31 | 64.84 | 69.12 | 46.44 | 55.16 |
+| `bge_m3-case_summary+dispute_focus+court_reasoning` | 59.81 | 51.71 | 48.04 | 44.39 | 69.55 | 72.49 | 74.32 | 75.77 | 80.47 | 55.97 | 70.63 |
+| `bge_m3-case_summary+dispute_focus+court_reasoning+four_elements+laws_and_charges` | 61.68 | 53.58 | 48.04 | 44.67 | 70.45 | 73.27 | 75.57 | 76.86 | 81.73 | 57.52 | 72.88 |
+| **`bge_m3-fused-bm25`** | **58.88** | **53.89** | **51.78** | **46.82** | **72.92** | **75.55** | **77.67** | **79.57** | **83.84** | **59.53** | **71.97** |
+| `bge_m3-fused_all-bm25` | 58.88 | 54.21 | 51.59 | 47.57 | 72.60 | 75.60 | 77.59 | 79.59 | 83.53 | 59.49 | 70.96 |
+
+The current default hybrid choice is **`bge_m3-fused-bm25`**. In these experiments, it gives the strongest overall tradeoff among the tested settings, especially on `P@5`, `NDCG@5`, `NDCG@30`, and `MAP`, while remaining simpler than the full-structure fused variant.
 
 ## Testing
 
