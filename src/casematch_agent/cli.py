@@ -10,6 +10,7 @@ from .agent import (
     DEFAULT_STRUCTURED_CORPUS_PATH,
     build_default_agent,
     build_lecard_agent,
+    create_thread_id,
     resolve_lecard_ranker_config,
 )
 from .models import AgentState, ClarificationStatus, StructuredQuery
@@ -114,6 +115,7 @@ def main(argv: list[str] | None = None) -> None:
         agent = build_default_agent()
         corpus_hint = "sample corpus"
     state: AgentState | None = None
+    thread_id = create_thread_id()
 
     print(BANNER)
     print(f"当前语料: {corpus_hint}")
@@ -125,12 +127,13 @@ def main(argv: list[str] | None = None) -> None:
             break
         if user_input.lower() == "reset":
             state = None
+            thread_id = create_thread_id()
             print("上下文已重置。")
             continue
         if not user_input:
             continue
 
-        response = agent.respond(user_input, state=state)
+        response = agent.respond(user_input, thread_id=thread_id)
         state = response.state
 
         print(f"\nAgent: {response.narrative}")

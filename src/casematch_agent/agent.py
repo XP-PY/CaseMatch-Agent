@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import os
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Union, List
+from typing import Any, Optional, Union, List, TypedDict
 import torch
 
 from casematch_ranker import (
@@ -32,14 +33,62 @@ from .retriever import CaseRanker, InMemoryCandidateRepository, PipelineCaseRetr
 from .sample_cases import load_sample_cases
 from .sqlite_store import SQLiteLeCaRDCandidateRepository
 
-PROCESS_DATA_DIR = Path(__file__).resolve().parents[2] / "data/process"
-DEFAULT_STRUCTURED_CORPUS_PATH = PROCESS_DATA_DIR / "lecard/corpus_merged.jsonl"
-DEFAULT_LANCEDB_URI = PROCESS_DATA_DIR / "cases.lancedb"
-DEFAULT_CASE_DB_PATH = PROCESS_DATA_DIR / "cases.sqlite3"
+try:
+    from langgraph.graph import END, START, StateGraph
+    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+    _LANGGRAPH_AVAILABLE = True
+except ImportError:  # pragma: no cover - optional dependency
+    END = START = None
+    StateGraph = None
+    MemorySaver = None
+    JsonPlusSerializer = None
+    _LANGGRAPH_AVAILABLE = False
+
+
+DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+LECARD_DATA_DIR = DATA_DIR / "lecard"
+DEFAULT_STRUCTURED_CORPUS_PATH = LECARD_DATA_DIR / "corpus_merged.jsonl"
+DEFAULT_LANCEDB_URI = DATA_DIR / "cases.lancedb"
+DEFAULT_CASE_DB_PATH = DATA_DIR / "cases.sqlite3"
 
 # Backward-compatible aliases kept for existing imports.
 DEFAULT_LECARD_CORPUS_PATH = DEFAULT_STRUCTURED_CORPUS_PATH
 DEFAULT_LECARD_DB_PATH = DEFAULT_CASE_DB_PATH
+
+
+def create_thread_id(prefix: str = "casematch") -> str:
+    normalized_prefix = prefix.strip().lower() or "casematch"
+    return f"{normalized_prefix}-{uuid.uuid4().hex}"
+
+
+_CHECKPOINT_ALLOWED_MSGPACK_MODULES = [
+    ("casematch_agent.models", "StructuredQuery"),
+    ("casematch_agent.models", "StructuredCase"),
+    ("casematch_agent.models", "RetrievalResult"),
+    ("casematch_agent.models", "ClarificationDecision"),
+    ("casematch_agent.models", "ClarificationStatus"),
+    ("casematch_agent.models", "ConversationMemory"),
+    ("casematch_agent.models", "AgentState"),
+    ("casematch_agent.models", "AgentResponse"),
+]
+
+
+class AgentGraphState(TypedDict, total=False):
+    user_message: str
+    thread_id: str | None
+    top_k: int
+    session_state: AgentState | None
+    previous_memory: ConversationMemory
+    current_query: StructuredQuery
+    merged_query: StructuredQuery
+    current_memory: ConversationMemory
+    retrieval_results: list[RetrievalResult]
+    decision: Any
+    next_state: AgentState
+    narrative: str
+    response: AgentResponse
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -225,8 +274,72 @@ class CaseMatchAgent:
     retriever: PipelineCaseRetriever | HybridCaseRetriever
     clarification_judge: object
     context_manager: QueryContextManager = field(default_factory=QueryContextManager)
+    _checkpointer: Any = field(init=False, repr=False, default=None)
+    _compiled_graph: Any = field(init=False, repr=False, default=None)
+    _thread_state_cache: dict[str, AgentState] = field(init=False, repr=False, default_factory=dict)
 
-    def respond(self, user_message: str, state: AgentState | None = None, top_k: int = 3) -> AgentResponse:
+    def __post_init__(self) -> None:
+        if _LANGGRAPH_AVAILABLE:
+            self._checkpointer = MemorySaver(
+                serde=JsonPlusSerializer(
+                    allowed_msgpack_modules=_CHECKPOINT_ALLOWED_MSGPACK_MODULES,
+                )
+            )
+            self._compiled_graph = self._build_graph()
+
+    def respond(
+        self,
+        user_message: str,
+        state: AgentState | None = None,
+        top_k: int = 3,
+        thread_id: str | None = None,
+    ) -> AgentResponse:
+        if thread_id and self._compiled_graph is not None:
+            result = self._compiled_graph.invoke(
+                {
+                    "user_message": user_message,
+                    "thread_id": thread_id,
+                    "top_k": top_k,
+                },
+                config=self._graph_config(thread_id),
+            )
+            return result["response"]
+
+        effective_state = state
+        if thread_id and effective_state is None:
+            effective_state = self._thread_state_cache.get(thread_id)
+
+        response = self._respond_without_graph(
+            user_message=user_message,
+            state=effective_state,
+            top_k=top_k,
+            thread_id=thread_id,
+        )
+        if thread_id:
+            self._thread_state_cache[thread_id] = response.state
+        return response
+
+    def get_thread_state(self, thread_id: str) -> AgentState | None:
+        if not thread_id:
+            return None
+        if self._compiled_graph is not None:
+            snapshot = self._compiled_graph.get_state(self._graph_config(thread_id))
+            if snapshot and snapshot.values:
+                session_state = snapshot.values.get("session_state")
+                if isinstance(session_state, AgentState):
+                    return session_state
+        return self._thread_state_cache.get(thread_id)
+
+    def _graph_config(self, thread_id: str) -> dict[str, Any]:
+        return {"configurable": {"thread_id": thread_id}}
+
+    def _respond_without_graph(
+        self,
+        user_message: str,
+        state: AgentState | None = None,
+        top_k: int = 3,
+        thread_id: str | None = None,
+    ) -> AgentResponse:
         previous_memory = state.memory if state else ConversationMemory()
         current_query = self.extractor.extract(user_message)
         merged_query = self._merge_query(state.structured_query, current_query, user_message) if state else current_query
@@ -239,6 +352,7 @@ class CaseMatchAgent:
             turn_count=(state.turn_count + 1) if state else 1,
             waiting_for_clarification=decision.status == ClarificationStatus.NEED_MORE_INFO,
             memory=next_memory,
+            thread_id=thread_id or (state.thread_id if state else None),
         )
         narrative = self._narrative(merged_query, decision, retrieval_results)
         return AgentResponse(
@@ -248,6 +362,103 @@ class CaseMatchAgent:
             retrieval_results=retrieval_results,
             narrative=narrative,
         )
+
+    def _build_graph(self):
+        assert StateGraph is not None
+        graph = StateGraph(AgentGraphState)
+        graph.add_node("extract_query", self._extract_query_node)
+        graph.add_node("update_memory", self._update_memory_node)
+        graph.add_node("retrieve_cases", self._retrieve_cases_node)
+        graph.add_node("clarify", self._clarify_node)
+        graph.add_node("prepare_clarification_response", self._prepare_clarification_response_node)
+        graph.add_node("prepare_ready_response", self._prepare_ready_response_node)
+        graph.add_edge(START, "extract_query")
+        graph.add_edge("extract_query", "update_memory")
+        graph.add_edge("update_memory", "retrieve_cases")
+        graph.add_edge("retrieve_cases", "clarify")
+        graph.add_conditional_edges(
+            "clarify",
+            self._route_after_clarification,
+            {
+                "need_more_info": "prepare_clarification_response",
+                "ready": "prepare_ready_response",
+            },
+        )
+        graph.add_edge("prepare_clarification_response", END)
+        graph.add_edge("prepare_ready_response", END)
+        return graph.compile(checkpointer=self._checkpointer)
+
+    def _extract_query_node(self, state: AgentGraphState) -> AgentGraphState:
+        previous_state = state.get("session_state")
+        user_message = state["user_message"]
+        current_query = self.extractor.extract(user_message)
+        merged_query = (
+            self._merge_query(previous_state.structured_query, current_query, user_message)
+            if previous_state is not None
+            else current_query
+        )
+        previous_memory = previous_state.memory if previous_state is not None else ConversationMemory()
+        return {
+            "previous_memory": previous_memory,
+            "current_query": current_query,
+            "merged_query": merged_query,
+        }
+
+    def _update_memory_node(self, state: AgentGraphState) -> AgentGraphState:
+        current_memory = self.context_manager.update_after_user_turn(
+            state["previous_memory"],
+            state["user_message"],
+            state["current_query"],
+        )
+        return {"current_memory": current_memory}
+
+    def _retrieve_cases_node(self, state: AgentGraphState) -> AgentGraphState:
+        retrieval_results = self.retriever.search(state["merged_query"], top_k=state["top_k"])
+        return {"retrieval_results": retrieval_results}
+
+    def _clarify_node(self, state: AgentGraphState) -> AgentGraphState:
+        decision = self.clarification_judge.decide(
+            state["merged_query"],
+            state["retrieval_results"],
+            memory=state["current_memory"],
+        )
+        next_memory = self.context_manager.update_after_clarification(state["current_memory"], decision)
+        previous_state = state.get("session_state")
+        next_state = AgentState(
+            structured_query=state["merged_query"],
+            turn_count=(previous_state.turn_count + 1) if previous_state else 1,
+            waiting_for_clarification=decision.status == ClarificationStatus.NEED_MORE_INFO,
+            memory=next_memory,
+            thread_id=state.get("thread_id") or (previous_state.thread_id if previous_state else None),
+        )
+        narrative = self._narrative(state["merged_query"], decision, state["retrieval_results"])
+        return {
+            "decision": decision,
+            "next_state": next_state,
+            "narrative": narrative,
+            "session_state": next_state,
+        }
+
+    def _route_after_clarification(self, state: AgentGraphState) -> str:
+        if state["decision"].status == ClarificationStatus.NEED_MORE_INFO:
+            return "need_more_info"
+        return "ready"
+
+    def _prepare_clarification_response_node(self, state: AgentGraphState) -> AgentGraphState:
+        return {"response": self._build_response(state)}
+
+    def _prepare_ready_response_node(self, state: AgentGraphState) -> AgentGraphState:
+        return {"response": self._build_response(state)}
+
+    def _build_response(self, state: AgentGraphState) -> AgentResponse:
+        response = AgentResponse(
+            state=state["next_state"],
+            structured_query=state["merged_query"],
+            decision=state["decision"],
+            retrieval_results=state["retrieval_results"],
+            narrative=state["narrative"],
+        )
+        return response
 
     def _narrative(
         self,

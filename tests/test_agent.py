@@ -132,6 +132,23 @@ class CaseMatchAgentTests(unittest.TestCase):
         self.assertEqual(second.retrieval_results[0].case.case_id, "CM-002")
         self.assertEqual(second.decision.status, ClarificationStatus.READY)
 
+    def test_thread_id_persists_multi_turn_state_without_manual_state_passing(self) -> None:
+        thread_id = "thread-dangerous-driving"
+
+        first = self.agent.respond("我想找盗窃罪的类案", thread_id=thread_id)
+        second = self.agent.respond(
+            "是趁被害人不备秘密窃取财物，主观方面是直接故意。",
+            thread_id=thread_id,
+        )
+
+        self.assertEqual(first.state.thread_id, thread_id)
+        self.assertEqual(second.state.thread_id, thread_id)
+        self.assertEqual(second.retrieval_results[0].case.case_id, "CM-002")
+        self.assertEqual(second.decision.status, ClarificationStatus.READY)
+        restored_state = self.agent.get_thread_state(thread_id)
+        self.assertIsNotNone(restored_state)
+        self.assertEqual(restored_state.structured_query.charges, second.state.structured_query.charges)
+
     def test_llm_pipeline_can_drive_extraction_and_clarification(self) -> None:
         llm_agent = build_default_agent(
             client=FakeLLMClient(

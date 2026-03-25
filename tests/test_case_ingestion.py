@@ -6,6 +6,7 @@ from pathlib import Path
 from casematch_agent.case_ingestion import (
     CriminalCaseStructuredDataExtractor,
     generate_unique_case_id,
+    import_raw_cases_batch_from_jsonl,
     import_raw_cases_from_jsonl,
 )
 
@@ -133,6 +134,48 @@ class CaseIngestionTests(unittest.TestCase):
             self.assertEqual(report.imported_count, 1)
             stored = json.loads(corpus_path.read_text(encoding="utf-8").strip())
             self.assertEqual(stored["raw_data"]["document_name"], "张某盗窃一审刑事判决书")
+
+    def test_import_batch_returns_structured_cases_before_sync(self) -> None:
+        raw_payload = {
+            "case_name": "李某危险驾驶案",
+            "document_name": "李某危险驾驶一审刑事判决书",
+            "fact_text": "被告人醉酒驾驶机动车。",
+            "judgment_text": "判决被告人犯危险驾驶罪。",
+            "full_text": "被告人醉酒驾驶机动车。法院认为其行为已构成危险驾驶罪。",
+        }
+        llm_client = FakeLLMClient(
+            [
+                {
+                    "case_summary": "被告人醉酒驾驶机动车。",
+                    "dispute_focus": "是否构成危险驾驶罪",
+                    "four_elements": {
+                        "subject": [],
+                        "object": [],
+                        "objective_aspect": ["醉酒驾驶机动车"],
+                        "subjective_aspect": ["直接故意"],
+                    },
+                    "court_reasoning": "其行为已构成危险驾驶罪。",
+                    "laws_and_charges": {"charges": ["危险驾驶罪"], "applicable_laws": []},
+                    "traceability": {"reasoning_quote": "其行为已构成危险驾驶罪。"},
+                }
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_path = Path(tmpdir)
+            input_path = tmp_path / "new_cases.jsonl"
+            corpus_path = tmp_path / "corpus_merged.jsonl"
+            input_path.write_text(json.dumps(raw_payload, ensure_ascii=False) + "\n", encoding="utf-8")
+
+            batch = import_raw_cases_batch_from_jsonl(
+                input_path=input_path,
+                corpus_path=corpus_path,
+                extractor=CriminalCaseStructuredDataExtractor(client=llm_client),
+            )
+
+            self.assertEqual(batch.report.imported_count, 1)
+            self.assertEqual(len(batch.structured_cases), 1)
+            self.assertEqual(batch.structured_cases[0].charges, ["危险驾驶罪"])
 
 
 if __name__ == "__main__":

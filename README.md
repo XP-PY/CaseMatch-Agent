@@ -5,6 +5,8 @@ CaseMatch Agent is an open-source prototype for Chinese criminal similar-case re
 It combines:
 
 - LLM-based structured query extraction
+- LangGraph-based agent orchestration
+- LangGraph checkpoint-backed multi-turn session state
 - multi-turn clarification when user information is insufficient
 - LanceDB vector recall with SQLite fallback
 - BM25 / BGE-M3 / Hybrid reranking
@@ -110,6 +112,12 @@ PYTHONPATH=src python -m casematch_agent
 ```bash
 PYTHONPATH=src python -m casematch_agent.gradio_app --host 127.0.0.1 --port 7860
 ```
+
+#### Interface Preview
+
+<p align="center">
+  <img src="assert/demo_gradio.png" alt="CaseMatch Agent Gradio UI" width="100%" />
+</p>
 
 The Gradio UI supports:
 

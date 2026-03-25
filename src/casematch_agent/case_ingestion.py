@@ -192,14 +192,19 @@ class CaseImportReport:
     case_ids: list[str]
 
 
-def import_raw_cases_from_jsonl(
+@dataclass
+class CaseImportBatch:
+    report: CaseImportReport
+    structured_cases: list[StructuredCase]
+
+
+def import_raw_cases_batch_from_jsonl(
     *,
     input_path: str | Path,
     corpus_path: str | Path,
     extractor: CriminalCaseStructuredDataExtractor,
-    sync_backend: Callable[[list[StructuredCase]], None] | None = None,
     case_id_prefix: str = "CASE",
-) -> CaseImportReport:
+) -> CaseImportBatch:
     source_path = Path(input_path)
     target_corpus = Path(corpus_path)
     existing_ids = load_existing_case_ids(target_corpus)
@@ -228,12 +233,31 @@ def import_raw_cases_from_jsonl(
             created_ids.append(case_id)
 
     append_merged_records(target_corpus, merged_records)
-    if sync_backend is not None and structured_cases:
-        sync_backend(structured_cases)
-
-    return CaseImportReport(
-        input_path=source_path,
-        corpus_path=target_corpus,
-        imported_count=len(created_ids),
-        case_ids=created_ids,
+    return CaseImportBatch(
+        report=CaseImportReport(
+            input_path=source_path,
+            corpus_path=target_corpus,
+            imported_count=len(created_ids),
+            case_ids=created_ids,
+        ),
+        structured_cases=structured_cases,
     )
+
+
+def import_raw_cases_from_jsonl(
+    *,
+    input_path: str | Path,
+    corpus_path: str | Path,
+    extractor: CriminalCaseStructuredDataExtractor,
+    sync_backend: Callable[[list[StructuredCase]], None] | None = None,
+    case_id_prefix: str = "CASE",
+) -> CaseImportReport:
+    batch = import_raw_cases_batch_from_jsonl(
+        input_path=input_path,
+        corpus_path=corpus_path,
+        extractor=extractor,
+        case_id_prefix=case_id_prefix,
+    )
+    if sync_backend is not None and batch.structured_cases:
+        sync_backend(batch.structured_cases)
+    return batch.report

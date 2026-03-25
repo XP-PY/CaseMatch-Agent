@@ -105,6 +105,7 @@ class AgentState:
     turn_count: int = 1
     waiting_for_clarification: bool = False
     memory: ConversationMemory = field(default_factory=ConversationMemory)
+    thread_id: str | None = None
 
 
 @dataclass
